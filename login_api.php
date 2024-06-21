@@ -1,33 +1,6 @@
 <?php
 session_start();
 
-// Include the JWT library
-require __DIR__ . '/vendor/autoload.php'; // Adjust the path as per your project structure
-
-use Firebase\JWT\JWT;
-
-// Define your JWT secret key (keep it secure and unique)
-define('JWT_SECRET', 'G+uOcLDhvAHzqFkaHW04nKBBRKitN/xYNAwuTtNHHSM=');
-
-// Function to generate JWT token
-function generateJWT($username, $jwt_secret) {
-    $payload = array(
-        "username" => $username,
-        "iat" => time(),
-        "exp" => time() + (60 * 60) // Token expiration time (1 hour)
-    );
-
-    $token = JWT::encode($payload, $jwt_secret, 'HS256');
-
-
-    // Log JWT information
-    // error_log("Generated JWT for user: $username, Token: $token");
-
-    return $token;
-}
-
-
-
 // Database configuration
 $db_host = 'localhost';
 $db_username = 'root';
@@ -42,50 +15,80 @@ if ($conn->connect_error) {
     die("Connection failed: " . $conn->connect_error);
 }
 
+// Function to generate a simple auth token
+function generateAuthToken() {
+    return bin2hex(random_bytes(16)); // Generates a random token
+}
+
 // Handle POST request for user login
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && strpos($_SERVER['REQUEST_URI'], '/login') !== false) {
     // Get the raw POST data
     $rawData = file_get_contents("php://input");
     $data = json_decode($rawData, true);
+
+    // Log the received data for debugging
+    error_log("Received data: " . print_r($data, true));
 
     // Validate input
     if (isset($data['username']) && isset($data['password'])) {
         $username = $data['username'];
         $password = $data['password'];
 
-        // Fetch user from the database based on username
-        $stmt = $conn->prepare("SELECT * FROM users WHERE username = ?");
+        // Prepare and execute SQL statement to fetch user from database
+        $stmt = $conn->prepare("SELECT id, password, created_at, status, auth_token FROM users WHERE username = ?");
+        if (!$stmt) {
+            error_log("Prepare failed: " . $conn->error);
+            die("Prepare failed: " . $conn->error);
+        }
+
         $stmt->bind_param("s", $username);
-        $stmt->execute();
+        if (!$stmt->execute()) {
+            error_log("Execute failed: " . $stmt->error);
+            die("Execute failed: " . $stmt->error);
+        }
+
         $result = $stmt->get_result();
-        
         if ($result->num_rows > 0) {
+            // User found, check password
             $user = $result->fetch_assoc();
-            // Verify password
             if (password_verify($password, $user['password'])) {
-                // Password is correct, generate JWT token
-                $token = generateJWT($username, JWT_SECRET);
+                // Passwords match, generate new auth token
+                $authToken = generateAuthToken();
 
-                // Split the token and ignore index 0
-              // Split the token and ignore index 0
-                    //  $tokenParts = str_split($token);
-                    //  $accessToken = $tokenParts;
+                // Update auth token in the database
+                $stmt->close(); // Close the first statement here
 
-                     // Log the access token
-                        error_log($token);
+                $update_stmt = $conn->prepare("UPDATE users SET auth_token = ? WHERE id = ?");
+                if (!$update_stmt) {
+                    error_log("Prepare failed: " . $conn->error);
+                    die("Prepare failed: " . $conn->error);
+                }
 
+                $update_stmt->bind_param("si", $authToken, $user['id']);
+                if (!$update_stmt->execute()) {
+                    error_log("Execute failed: " . $update_stmt->error);
+                    die("Execute failed: " . $update_stmt->error);
+                }
 
-                // User logged in successfully
-                $response = array('status' => 'success', 'message' => 'User logged in successfully', 'token' => $token);
+                $update_stmt->close(); // Close the update statement
+
+                // Return success message with auth token, created_at, and status
+                $response = array(
+                    'status' => 'success',
+                    'message' => 'Login successful',
+                    'auth_token' => $authToken,
+                    'created_at' => $user['created_at'],
+                    'user_status' => $user['status']
+                );
             } else {
-                // Incorrect password
-                $response = array('status' => 'error', 'message' => 'Incorrect password');
+                // Passwords don't match
+                $response = array('status' => 'error', 'message' => 'Invalid password');
             }
         } else {
             // User not found
-            $response = array('status' => 'error', 'message' => 'User not found');
+            $response = array('status' => 'error', 'message' => 'Username not found');
         }
-        $stmt->close();
+
     } else {
         // Missing username or password in the request
         $response = array('status' => 'error', 'message' => 'Username and password are required');
@@ -102,3 +105,4 @@ echo json_encode($response);
 // Close database connection
 $conn->close();
 ?>
+
